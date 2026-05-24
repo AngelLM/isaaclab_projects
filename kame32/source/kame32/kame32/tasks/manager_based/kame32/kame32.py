@@ -90,8 +90,11 @@ KAME_CFG = ArticulationCfg(
         # gait looks too stiff (oscillation) or too soft (collapses under load).
         "servos": ImplicitActuatorCfg(
             joint_names_expr=KAME_ACTUATED_JOINTS,
-            effort_limit_sim=0.18,
-            velocity_limit_sim=8.0,
+            # Modelled as a fast MG90s rather than an SG90: higher speed limit so the robot
+            # can actually reach the higher commanded velocities (~0.45 m/s), plus a bit
+            # more torque to accelerate the legs in faster swings.
+            effort_limit_sim=0.20,
+            velocity_limit_sim=14.0,
             stiffness=6.0,
             damping=0.2,
         ),

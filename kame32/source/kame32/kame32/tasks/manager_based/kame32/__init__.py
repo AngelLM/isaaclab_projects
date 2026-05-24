@@ -14,7 +14,7 @@ from . import agents
 
 gym.register(
     id="Template-Kame32-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point=f"{__name__}.kame32_env:Kame32Env",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.kame32_env_cfg:Kame32EnvCfg",
@@ -24,7 +24,7 @@ gym.register(
 
 gym.register(
     id="Template-Kame32-Play-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point=f"{__name__}.kame32_env:Kame32Env",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.kame32_env_cfg:Kame32EnvCfg_PLAY",

@@ -78,16 +78,16 @@ class Kame32SceneCfg(InteractiveSceneCfg):
 class CommandsCfg:
     """Base-velocity command. Forward-biased so the robot learns to walk ahead."""
 
-    base_velocity = mdp.UniformVelocityCommandCfg(
+    base_velocity = mdp.Kame32VelocityCommandCfg(
         asset_name="robot",
-        resampling_time_range=(5.0, 5.0),
+        resampling_time_range=(3.0, 5.0),  # resample more often -> more speed variety per episode
         rel_standing_envs=0.02,
         rel_heading_envs=1.0,
         heading_command=False,
         debug_vis=True,
         ranges=mdp.UniformVelocityCommandCfg.Ranges(
-            # varied speeds (slow .. a bit faster), some reverse, and real turns
-            lin_vel_x=(-0.1, 0.2),
+            # wide spread of speeds (reverse, slow, up to ~0.45 m/s) and real turns
+            lin_vel_x=(-0.15, 0.45),
             lin_vel_y=(0.0, 0.0),
             ang_vel_z=(-1.0, 1.0),
         ),
@@ -213,7 +213,8 @@ class RewardsCfg:
     base_linear_velocity = RewTerm(
         func=mdp.base_linear_velocity_reward,
         weight=5.0,
-        params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.15, "ramp_at_vel": 0.15, "ramp_rate": 0.5},
+        # std widened with the higher top speed; ramp_rate rewards going fast a bit more
+        params={"asset_cfg": SceneEntityCfg("robot"), "std": 0.18, "ramp_at_vel": 0.15, "ramp_rate": 0.75},
     )
     base_angular_velocity = RewTerm(
         func=mdp.base_angular_velocity_reward,
@@ -232,10 +233,10 @@ class RewardsCfg:
     )
     foot_clearance = RewTerm(
         func=mdp.foot_clearance_reward,
-        weight=1.5,
+        weight=2.0,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="Foot_.*"),
-            "target_height": 0.045,  # lift swing foot higher -> bigger leg motions
+            "target_height": 0.055,  # lift swing foot higher -> bigger lift-joint motions
             "std": 0.01,
             "tanh_mult": 2.0,
         },
@@ -254,7 +255,7 @@ class RewardsCfg:
     )
     lift_swing = RewTerm(
         func=mdp.joint_swing_reward,
-        weight=0.1,
+        weight=0.35,  # raised: the lift joints were barely moving; push for wider lift motion
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=KAME_LIFT_JOINTS), "max_speed": 8.0},
     )
     gait = RewTerm(
@@ -366,11 +367,7 @@ class Kame32EnvCfg(ManagerBasedRLEnvCfg):
         # tick the contact sensor at the physics rate
         if self.scene.contact_forces is not None:
             self.scene.contact_forces.update_period = self.sim.dt
-        # Velocity command arrow markers: the default (0.5, 0.5, 0.5) is ~3x this 15 cm
-        # robot and only the length scales with velocity, so it renders as a giant
-        # squashed disc. Shrink to a thin arrow sized for kame32.
-        self.commands.base_velocity.goal_vel_visualizer_cfg.markers["arrow"].scale = (0.25, 0.02, 0.02)
-        self.commands.base_velocity.current_vel_visualizer_cfg.markers["arrow"].scale = (0.25, 0.02, 0.02)
+        # NOTE: velocity marker sizes are handled by Kame32VelocityCommandCfg (linear + angular)
 
 
 @configclass
@@ -385,7 +382,7 @@ class Kame32EnvCfg_PLAY(Kame32EnvCfg):
         # disable randomization for clean playback
         self.observations.policy.enable_corruption = False
         self.events.push_robot = None
-        # fixed, gentle forward command
-        self.commands.base_velocity.ranges.lin_vel_x = (0.1, 0.1)
+        # fixed, representative walking speed (edit to view other speeds/turns)
+        self.commands.base_velocity.ranges.lin_vel_x = (0.3, 0.3)
         self.commands.base_velocity.ranges.lin_vel_y = (0.0, 0.0)
         self.commands.base_velocity.ranges.ang_vel_z = (0.0, 0.0)
