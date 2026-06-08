@@ -108,32 +108,32 @@ class ActionsCfg:
 
 @configclass
 class ObservationsCfg:
-    """Proprioception + IMU observations (see project notes)."""
+    """Realistic observations: IMU plus the last servo command.
+
+    This mirrors the real hardware. The hobby servos give no position feedback, so the policy
+    does NOT see joint angles or velocities; instead it sees the last position command it sent
+    (``actions``) and infers the leg state from it. The base linear velocity is NOT observed
+    (it cannot be measured on the robot). The only sensor is an IMU, modelled here with
+    privileged values it would provide: the base angular velocity (gyro) and the gravity
+    direction (tilt, from the accelerometer / orientation).
+    """
 
     @configclass
     class PolicyCfg(ObsGroup):
-        # base state (IMU + privileged base linear velocity, sim only)
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.1, n_max=0.1))
+        # IMU: angular velocity (gyro) and gravity direction (tilt)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
-        # command
+        # velocity command
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
-        # proprioception (only the 8 actuated joints -- the servos report their own angle)
-        joint_pos = ObsTerm(
-            func=mdp.joint_pos_rel,
-            params={"asset_cfg": SceneEntityCfg("robot", joint_names=KAME_ACTUATED_JOINTS)},
-            noise=Unoise(n_min=-0.01, n_max=0.01),
-        )
-        joint_vel = ObsTerm(
-            func=mdp.joint_vel_rel,
-            params={"asset_cfg": SceneEntityCfg("robot", joint_names=KAME_ACTUATED_JOINTS)},
-            noise=Unoise(n_min=-0.5, n_max=0.5),
-        )
+        # last position command sent to the servos (the only proprioceptive signal available)
         actions = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self) -> None:
             self.enable_corruption = True
             self.concatenate_terms = True
+            # stack the last 5 observations: without joint feedback a single snapshot is too
+            # partial, so the policy gets the recent IMU/command/last-action sequence (17 x 5 = 85)
+            self.history_length = 5
 
     policy: PolicyCfg = PolicyCfg()
 
