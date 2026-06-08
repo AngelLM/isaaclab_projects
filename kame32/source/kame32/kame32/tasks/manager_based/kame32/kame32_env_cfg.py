@@ -24,7 +24,6 @@ from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
-from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from . import mdp
 from .kame32 import KAME_ACTUATED_JOINTS, KAME_CFG, KAME_LIFT_JOINTS, KAME_YAW_JOINTS
@@ -108,21 +107,17 @@ class ActionsCfg:
 
 @configclass
 class ObservationsCfg:
-    """Realistic observations: IMU plus the last servo command.
+    """Blind (no-sensor) observations: only the command and the last servo command.
 
-    This mirrors the real hardware. The hobby servos give no position feedback, so the policy
-    does NOT see joint angles or velocities; instead it sees the last position command it sent
-    (``actions``) and infers the leg state from it. The base linear velocity is NOT observed
-    (it cannot be measured on the robot). The only sensor is an IMU, modelled here with
-    privileged values it would provide: the base angular velocity (gyro) and the gravity
-    direction (tilt, from the accelerometer / orientation).
+    This variant drops the IMU entirely, for the case where no IMU can be fitted to the robot.
+    The policy has NO feedback from the world: it only knows the velocity command it is given
+    and the history of its own past actions. That makes it essentially feedforward (blind) --
+    it learns a cyclic gait and replays it, using the action history to track where in the cycle
+    it is. It is not reactive: it cannot feel a tilt or a push and correct for it.
     """
 
     @configclass
     class PolicyCfg(ObsGroup):
-        # IMU: angular velocity (gyro) and gravity direction (tilt)
-        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
-        projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
         # velocity command
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
         # last position command sent to the servos (the only proprioceptive signal available)
@@ -131,8 +126,8 @@ class ObservationsCfg:
         def __post_init__(self) -> None:
             self.enable_corruption = True
             self.concatenate_terms = True
-            # stack the last 5 observations: without joint feedback a single snapshot is too
-            # partial, so the policy gets the recent IMU/command/last-action sequence (17 x 5 = 85)
+            # stack the last 5 observations: with no IMU, the action history is the only temporal
+            # signal the policy has to infer the gait phase (11 x 5 = 55)
             self.history_length = 5
 
     policy: PolicyCfg = PolicyCfg()
