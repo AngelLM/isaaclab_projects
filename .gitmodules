@@ -1,0 +1,3 @@
+[submodule "kame32-v2/hardware/kame32-JavierIH"]
+	path = kame32-v2/hardware/kame32-JavierIH
+	url = https://github.com/JavierIH/kame32

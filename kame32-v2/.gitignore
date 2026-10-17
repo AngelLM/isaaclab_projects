@@ -1,0 +1,13 @@
+# El .gitignore raíz excluye todos los USD. El modelo definitivo del robot sí debe versionarse,
+# porque es el único que existe y no se puede regenerar automáticamente.
+!modelo/usd/kame32.usd
+
+# Copia de seguridad automática de Blender
+*.blend1
+
+# Iteraciones antiguas del USD (~150 MB): se guardan en disco pero no en git
+archivo/usd-iteraciones/
+
+# Artefactos de compilación de PlatformIO
+firmware/.pio/
+*.FCBak

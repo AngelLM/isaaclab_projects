@@ -1,0 +1,250 @@
+diff --git a/source/kame/kame/tasks/direct/kame/__init__.py b/source/kame/kame/tasks/direct/kame/__init__.py
+index c159526..aa82061 100644
+--- a/source/kame/kame/tasks/direct/kame/__init__.py
++++ b/source/kame/kame/tasks/direct/kame/__init__.py
+@@ -30,4 +30,24 @@ gym.register(
+         "env_cfg_entry_point": f"{__name__}.kame_env_cfg:KameEnvCfgPhase1",
+         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
+     },
++)
++
++gym.register(
++    id="Template-Kame-Direct-Phase2",
++    entry_point=f"{__name__}.kame_env:KameEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.kame_env_cfg:KameEnvCfgPhase2",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
++    },
++)
++
++gym.register(
++    id="Template-Kame-Direct-Phase3",
++    entry_point=f"{__name__}.kame_env:KameEnv",
++    disable_env_checker=True,
++    kwargs={
++        "env_cfg_entry_point": f"{__name__}.kame_env_cfg:KameEnvCfgPhase3",
++        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:PPORunnerCfg",
++    },
+ )
+\ No newline at end of file
+diff --git a/source/kame/kame/tasks/direct/kame/agents/rsl_rl_ppo_cfg.py b/source/kame/kame/tasks/direct/kame/agents/rsl_rl_ppo_cfg.py
+index d093755..0c0546c 100644
+--- a/source/kame/kame/tasks/direct/kame/agents/rsl_rl_ppo_cfg.py
++++ b/source/kame/kame/tasks/direct/kame/agents/rsl_rl_ppo_cfg.py
+@@ -18,8 +18,8 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
+         init_noise_std=1.0,
+         actor_obs_normalization=False,
+         critic_obs_normalization=False,
+-        actor_hidden_dims=[32, 32],
+-        critic_hidden_dims=[32, 32],
++        actor_hidden_dims=[128, 128, 64],
++        critic_hidden_dims=[128, 128, 64],
+         activation="elu",
+     )
+     algorithm = RslRlPpoAlgorithmCfg(
+diff --git a/source/kame/kame/tasks/direct/kame/kame_env.py b/source/kame/kame/tasks/direct/kame/kame_env.py
+index 6c8725e..bf3fbb7 100644
+--- a/source/kame/kame/tasks/direct/kame/kame_env.py
++++ b/source/kame/kame/tasks/direct/kame/kame_env.py
+@@ -60,11 +60,27 @@ class KameEnv(DirectRLEnv):
+         ]
+         self.actuated_joint_ids, _ = self.robot.find_joints(self.actuated_joint_names)
+ 
++        self.feet_names = ["Foot_LeftFront", "Foot_LeftBack", "Foot_RightFront", "Foot_RightBack"]  # o como se llamen tus feet
++        self.feet_ids, _ = self._contact_sensor.find_bodies(self.feet_names)
++
++        self.bracket_names = [
++            "Bracket_LeftFront",
++            "Bracket_RightFront",
++            "Bracket_LeftBack",
++            "Bracket_RightBack",
++        ]
++
++        self.bracket_ids, _ = self._contact_sensor.find_bodies(self.bracket_names)
++
+ 
+     def _setup_scene(self):
+         self.robot = Articulation(self.cfg.robot)
+         self.scene.articulations["robot"] = self.robot
+ 
++        # Contact Sensor
++        self._contact_sensor = ContactSensor(self.cfg.contact_sensor)
++        self.scene.sensors["contact_sensor"] = self._contact_sensor
++
+         # add ground plane
+         spawn_ground_plane(prim_path="/World/ground", cfg=GroundPlaneCfg())
+ 
+@@ -99,6 +115,8 @@ class KameEnv(DirectRLEnv):
+         self.forward_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4)).cuda() # forward marker orientations buffer
+         self.command_marker_orientations = torch.zeros((self.cfg.scene.num_envs, 4)).cuda() # command marker orientations buffer
+ 
++        self.air_time_counter = torch.zeros(self.num_envs, 4, device=self.device)
++
+ 
+     def _pre_physics_step(self, actions):
+         self.actions = actions.clone()
+@@ -143,27 +161,88 @@ class KameEnv(DirectRLEnv):
+         
+         observations = {"policy": obs}
+         return observations
+-    
+-    
++
++
+     def _get_rewards(self) -> torch.Tensor:
+-        forward_reward = self.robot.data.root_com_lin_vel_b[:,0]              # Reward for forward velocity in the robot's base frame # skrl uses .reshape(-1,1) here, but it leads to shape mismatch when rsl_rl library is used.
+-        alignment_reward = torch.sum(self.forwards * self.commands, dim=-1)   # Reward for alignment between robot's forward direction and command direction.  .The official documentation uses keepdim=True (I assume that it uses skrl Library), but it leads to shape mismatch when rsl_rl library is used, so it has to be removed when using rsl_rl.
+-        
++
++        # ---------------- BASE REWARD ----------------
++        forward_reward = self.robot.data.root_com_lin_vel_b[:, 0]
++        alignment_reward = torch.sum(self.forwards * self.commands, dim=-1)
++
+         action_penalty = torch.sum(self.actions ** 2, dim=1)
+         alive_reward = (~self.reset_buf).float()
+ 
++        # ---------------- CONTACT REWARDS ----------------
++        contact_forces = self._contact_sensor.data.net_forces_w
++        foot_forces = torch.norm(contact_forces[:, self.feet_ids, :], dim=-1)
++
++        contact = foot_forces > 1.0
++        
++        num_contacts = torch.sum(contact, dim=1)
++
++        # objetivo: ~3 patas en contacto (crawl gait)
++        contact_target = 3.0
++        contact_error = torch.abs(num_contacts.float() - contact_target)
++
++        # ✔ estabilidad → mínimo 3 patas
++        stability_reward = (num_contacts >= 3).float()
++
++        # ❌ penalizar quedarse sin contacto (salto / caída)
++        no_contact_penalty = (num_contacts == 0).float()
++
++        # ✔ uso equilibrado de patas
++        contact_var = torch.var(contact.float(), dim=1)
++
++        # ✔ penalizar tiempo en el aire
++        # incrementar tiempo en aire
++        self.air_time_counter += (~contact).float()
++
++        # resetear cuando hay contacto
++        self.air_time_counter *= (~contact).float()
++        
++        air_time_penalty = torch.sum(self.air_time_counter, dim=1)
++        max_air_time = torch.max(self.air_time_counter, dim=1)[0]
++
++        # equilibrio entre patas (muy importante)
++        mean_air_time = torch.mean(self.air_time_counter, dim=1, keepdim=True)
++
++        air_time_balance = torch.mean(
++            torch.abs(self.air_time_counter - mean_air_time), dim=1
++        )
++
++        # ---------------- FINAL REWARD ----------------
++
+         reward = (
+             self.cfg.forward_reward_weight * forward_reward * torch.exp(alignment_reward)
+             + self.cfg.alive_reward_weight * alive_reward
+             + self.cfg.action_penalty_weight * action_penalty
++            + self.cfg.stability_reward_weight * stability_reward
++            + self.cfg.no_contact_penalty_weight * no_contact_penalty
++            + self.cfg.contact_var_reward_weight * contact_var
++            + self.cfg.air_time_penalty_weight * air_time_penalty
++            + self.cfg.max_air_time_penalty_weight * max_air_time
++            + self.cfg.contact_error_penalty_weight * contact_error
++            - self.cfg.air_time_balance_penalty_weight * air_time_balance
+         )
++
+         return reward
+ 
+ 
+     def _get_dones(self):
+         time_out = self.episode_length_buf >= self.max_episode_length - 1
++
+         base_height = self.robot.data.root_pos_w[:, 2]
+         died = base_height <= 0.01
++
++        # 🔥 NUEVO
++        contact_forces = self._contact_sensor.data.net_forces_w
++        bracket_forces = torch.norm(
++            contact_forces[:, self.bracket_ids, :], dim=-1
++        )
++        bracket_contact = torch.any(bracket_forces > 1.0, dim=1)
++
++        died = died | bracket_contact
++
+         return died, time_out
+ 
+ 
+diff --git a/source/kame/kame/tasks/direct/kame/kame_env_cfg.py b/source/kame/kame/tasks/direct/kame/kame_env_cfg.py
+index fe95404..17dd8e2 100644
+--- a/source/kame/kame/tasks/direct/kame/kame_env_cfg.py
++++ b/source/kame/kame/tasks/direct/kame/kame_env_cfg.py
+@@ -58,15 +58,15 @@ class KameEnvCfg(DirectRLEnvCfg):
+         ),
+     )
+ 
+-    # contact_sensor: ContactSensorCfg = ContactSensorCfg(
+-    #     prim_path="/World/envs/env_.*/Robot/.*",  # Path to base_link in cloned envs
+-    #     history_length=5,
+-    #     update_period=0.005,  # Matches sim dt = 1/200
+-    #     track_air_time=True,  # Not needed for base
+-    # )
++    contact_sensor: ContactSensorCfg = ContactSensorCfg(
++        prim_path="/World/envs/env_.*/Robot/Kame32/.*",  # Path to base_link in cloned envs
++        history_length=5,
++        update_period=0.0025,  # Matches sim dt = 1/400
++        track_air_time=True,  # Not needed for base
++    )
+ 
+     # scene
+-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=200, env_spacing=2.0, replicate_physics=True)
++    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=512, env_spacing=2.0, replicate_physics=True)
+ 
+     # events
+     events: EventCfg = EventCfg()
+@@ -80,4 +80,39 @@ class KameEnvCfgPhase1(KameEnvCfg):
+     phase = 1
+     forward_reward_weight = 1.0
+     alive_reward_weight = 0.5
+-    action_penalty_weight = -0.01
+\ No newline at end of file
++    action_penalty_weight = -0.01
++    stability_reward_weight = 0.0
++    no_contact_penalty_weight = 0.0
++    contact_var_reward_weight = 0.0
++    air_time_penalty_weight = 0.0
++    max_air_time_penalty_weight = 0.0
++    contact_error_penalty_weight = 0.0
++    air_time_balance_penalty_weight = 0.0
++
++class KameEnvCfgPhase2(KameEnvCfg):
++    """Phase 2: stability and contact"""
++    phase = 2
++    forward_reward_weight = 1.0
++    alive_reward_weight = 0.5
++    action_penalty_weight = -0.01
++    stability_reward_weight = 0.3
++    no_contact_penalty_weight = -0.5
++    contact_var_reward_weight = 0.2
++    air_time_penalty_weight = -0.05
++    max_air_time_penalty_weight = -0.1
++    contact_error_penalty_weight = 0.0
++    air_time_balance_penalty_weight = 0.0
++
++class KameEnvCfgPhase3(KameEnvCfg):
++    """Phase 3: stability, contact, and balance"""
++    phase = 3
++    forward_reward_weight = 1.0
++    alive_reward_weight = 0.5
++    action_penalty_weight = -0.01
++    stability_reward_weight = 0.3
++    no_contact_penalty_weight = -0.5
++    contact_var_reward_weight = 0.2
++    air_time_penalty_weight = -0.05
++    max_air_time_penalty_weight = -0.1
++    contact_error_penalty_weight = -0.2
++    air_time_balance_penalty_weight = -0.1
+\ No newline at end of file
